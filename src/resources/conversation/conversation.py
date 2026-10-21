@@ -5,9 +5,6 @@ import json
 from typing import Any
 from uuid import uuid4
 
-from ..client.client import Client
-
-
 
 def new_id() -> str:
     return uuid4().hex
