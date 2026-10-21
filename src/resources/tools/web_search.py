@@ -2,9 +2,6 @@ from urllib.request import Request, urlopen
 from urllib.parse import urlparse
 from html.parser import HTMLParser
 
-from ddgs import DDGS
-
-
 class PageTextParser(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -48,12 +45,14 @@ def read_webpage(url: str) -> dict:
             "truncated": len(raw) > 1_000_000 or len(text) > 24000}
 
 def search_web(query: str) -> dict:
+    from ddgs import DDGS
+
     if not isinstance(query, str) or not query.strip():
         raise ValueError("Search query must be a nonempty string.")
 
     results = DDGS().text(
         query,
-        backend="duckduckgo",
+        backend="auto",
         max_results=5,
     )
 

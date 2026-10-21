@@ -37,8 +37,7 @@ class ChatMessageToolCall:
 
 
 @dataclass
-class ChatMessage:
-    role: str = MessageRole.ASSISTANT
+class ChatMessage: 
     content: str = None
     function_call: bool = False
     tool_calls: list[ChatMessageToolCall] = None
@@ -53,6 +52,10 @@ class ChatChoice:
 class ChatResponse:
     id: int
     choices: list[ChatChoice]
+    created_at: int | None = None
+    completed_at: int | None = None
+    output: list[dict] = field(default_factory=list)
+
 
 
 class ChatStructuredResponse:
@@ -61,8 +64,6 @@ class ChatStructuredResponse:
     """
 
     def __new__(cls, response: requests.Response) -> ChatResponse:
-        print("Status:", response.status_code)
-        print("Raw body:", response.text)
     
         response.raise_for_status()
     
@@ -71,11 +72,11 @@ class ChatStructuredResponse:
 
         text_parts = []
         tool_calls = []
-        role = MessageRole.ASSISTANT
+        # role = MessageRole.ASSISTANT
 
         for item in data.get("output", []):
             if item.get("type") == ChatMessageType.MESSAGE:
-                role = item.get("role", MessageRole.ASSISTANT)
+                role = item.get("role")
                 for part in item.get("content", []):
                     if part.get("type") == "output_text":
                         text_parts.append(part["text"])
@@ -89,6 +90,8 @@ class ChatStructuredResponse:
                     ),
                 ))
 
+        created_at = data.get("created_at")
+        completed_at = data.get("completed_at")
         status = data.get("status")
         if status == Status.COMPLETED:
             finish_reason = "tool_calls" if tool_calls else "stop"
@@ -99,10 +102,12 @@ class ChatStructuredResponse:
 
         return ChatResponse(
             id=data["id"],
+            created_at=created_at,
+            completed_at=completed_at,
+            output=data.get("output", []),
             choices=[ChatChoice(
                 finish_reason=finish_reason,
                 message=ChatMessage(
-                    role=role,
                     content="".join(text_parts) or None,
                     function_call=bool(tool_calls),
                     tool_calls=tool_calls or None,

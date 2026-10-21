@@ -1,9 +1,9 @@
 import requests
 import os
 
-from .chat_template import ChatStructuredResponse
+from ..chat.chat_template import ChatStructuredResponse
 
-def call_model(messages, tools, model, temperature=0):
+def call_model(messages, tools, model):
     response = requests.post(
         "https://api.openai.com/v1/responses",
         headers={
@@ -13,7 +13,7 @@ def call_model(messages, tools, model, temperature=0):
         json={
             "model": model,
             "input": messages,
-            "temperature": temperature,
+            # "temperature": temperature,
             "tools": tools,
             "stream": False,
         },
@@ -22,5 +22,6 @@ def call_model(messages, tools, model, temperature=0):
 
 
     structured = ChatStructuredResponse(response)
+
 
     return structured

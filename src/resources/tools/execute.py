@@ -1,7 +1,7 @@
-from agent.tools.web.tools import *
+from .web_search import read_webpage, search_tools, search_web
+from .files import file_tools, inspect_path, read_file
 from copy import deepcopy
 import json
-
 
 TOOL_REGISTRY = {
     tool["name"]: {
@@ -9,9 +9,11 @@ TOOL_REGISTRY = {
         "handler": {
             "search_web": search_web,
             "read_webpage": read_webpage,
+            "inspect_path": inspect_path,
+            "read_file": read_file,
         }[tool["name"]],
     }
-    for tool in search_tools
+    for tool in [*search_tools, *file_tools]
 }
         
 def select_tools(names: list[str]) -> list[dict]:
@@ -39,7 +41,7 @@ def execute_tool(name: str, arguments: dict):
     except Exception as error:
         output = json.dumps({
             "error": type(error).__name__,
-            "message": "Tool execution failed.",
+            "message": str(error),
         })
         
     return output
