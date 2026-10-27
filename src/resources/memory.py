@@ -1,12 +1,10 @@
-"""Read complete local memory files or select matching summaries/JSONL records.
-
-Reports use a header block, a blank line, and a prose body. A line of exactly
-72 hyphens separates reports. Entries without an unambiguous header are ignored
-so text mentioning an ID cannot select another client's report.
-"""
+"""Load stored conversation events and project their payloads into model input."""
 
 import json
 from pathlib import Path
+
+
+MESSAGE_TYPES = {"user_message", "model_response", "tool_call", "tool_result"}
 
 
 def read_memory_file(path: Path) -> str:
@@ -18,13 +16,9 @@ def read_memory_file(path: Path) -> str:
         return ""
 
 
-def load_jsonl_memory_context(path: Path, client_id: str, conversation_id: str) -> list[dict]:
-    """Return matching user, tool, and model payload objects in file order.
-
-    Keep duplicates and each payload's structure. Skip invalid records and
-    nonobject payloads; return an empty list for missing or unreadable files.
-    """
-    payloads = []
+def load_jsonl_memory_records(path: Path, client_id: str, conversation_id: str) -> list[dict]:
+    """Load this conversation's records in file order, including their metadata."""
+    records = []
     try:
         with Path(path).open("r", encoding="utf-8") as source:
             for line in source:
@@ -38,10 +32,18 @@ def load_jsonl_memory_context(path: Path, client_id: str, conversation_id: str) 
                     isinstance(record, dict)
                     and record.get("client_id") == client_id
                     and record.get("conversation_id") == conversation_id
-                    and record.get("type") in ("user_message", "tool_call", "tool_result", "model_response")
                     and isinstance(record.get("payload"), dict)
                 ):
-                    payloads.append(record["payload"])
+                    records.append(record)
     except (OSError, UnicodeError):
         return []
-    return payloads
+    return records
+
+
+def to_api_messages(records: list[dict]) -> list[dict]:
+    """Keep message/tool payloads; storage metadata and system prompts stay out."""
+    return [record["payload"] for record in records if record.get("type") in MESSAGE_TYPES]
+
+
+def load_jsonl_memory_context(path: Path, client_id: str, conversation_id: str) -> list[dict]:
+    return to_api_messages(load_jsonl_memory_records(path, client_id, conversation_id))

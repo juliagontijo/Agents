@@ -1,4 +1,5 @@
-from src.myagent.agent import run_agent
+from src.myagent.agent import MEMORY_PATH, run_agent
+from src.resources.conversation.conversation import ConversationRepository
 
 MODEL = "gpt-6-luna"
 
@@ -8,17 +9,19 @@ conversation_input = input("Conversation ID: ").strip()
 conversation_id = conversation_input if conversation_input else None
 
 client_id = "juju"
+repository = ConversationRepository(MEMORY_PATH)
+conversation = repository.open(client_id=client_id, conversation_id=conversation_id)
 
 while (prompt := input("You: ").strip()).lower() != "exit":
     if not prompt:
         continue
 
-    response, conversation_id, _ = run_agent(
+    response, conversation, _ = run_agent(
         prompt=prompt,
         model=MODEL,
         agent_tools=tools,
-        authenticated_client_id=client_id,
-        conversation_id=conversation_id,
+        conversation=conversation,
+        repository=repository,
     )
     print(response)
 

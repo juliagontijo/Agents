@@ -1,9 +1,9 @@
-from dataclasses import asdict
 import json
 from pathlib import Path
 
 from resources.system.system import call_model
-from src.myagent.agent import TRACE_PATH, run_agent
+from src.myagent.agent import run_agent
+from src.resources.conversation.conversation import ConversationRepository
 from uuid import uuid4
 import time
 
@@ -66,6 +66,8 @@ scorer = RunScorer(args.metrics)
 eval_id = new_id()
 conversation_id = f"memory_eval_mock_conv_id_{eval_id}"
 client_id = f"memory_eval_mock_user_{eval_id}"
+repository = ConversationRepository(Path(__file__).resolve().parents[1] / "data" / "memory_eval.jsonl")
+conversation = repository.open(client_id=client_id, conversation_id=conversation_id)
 path = Path(args.output)
 path = path.with_name(f"{path.stem}_{eval_id}{path.suffix}")
 path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,12 +104,12 @@ for turn in progress:
         turn=turn["id"], stage="waiting for agent", refresh=True
     )
 
-    response, conversation_id, trace_run_id = run_agent(
+    response, conversation, trace_run_id = run_agent(
         prompt=prompt,
         model=args.model,
         agent_tools=args.tools,
-        authenticated_client_id=client_id,
-        conversation_id=conversation_id,
+        conversation=conversation,
+        repository=repository,
         eval_mode=True
     )
 

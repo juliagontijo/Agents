@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from evals.metrics.scoring import RunScorer
 from evals.metrics.text import rouge_l, token_overlap
+from src.resources.conversation.conversation import ConversationRepository
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -132,7 +133,7 @@ class RunnerTests(unittest.TestCase):
 
         def fake_agent(**kwargs):
             calls.append(kwargs)
-            return "red", kwargs["conversation_id"], "trace-id"
+            return "red", kwargs["conversation"], "trace-id"
 
         agent_module.run_agent = fake_agent
         model_module = ModuleType("resources.system.system")
@@ -155,8 +156,11 @@ class RunnerTests(unittest.TestCase):
         dataset.write_text(''.join(json.dumps({"id": i, "prompt": "Recall the colour", "expected_answer": "red"}) + "\n" for i in [1, 2]))
         arguments = ["memory_eval", "--input", str(dataset), "--output", str(self.output), "--model", "mock", "--grader-model", "mock"]
         modules = {"src.myagent.agent": agent_module, "resources.system.system": model_module, "tqdm": progress_module}
-        with patch.dict(sys.modules, modules), patch.object(sys, "argv", arguments), contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+        repository = ConversationRepository(self.root / "memory.jsonl")
+        with patch.dict(sys.modules, modules), patch.object(sys, "argv", arguments), patch("src.resources.conversation.conversation.ConversationRepository", return_value=repository) as repository_class, patch.object(repository, "open", wraps=repository.open) as open_conversation, contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
             runpy.run_module("evals.memory_design.eval_memory_script", run_name="__main__")
+        repository_class.assert_called_once()
+        open_conversation.assert_called_once()
         path = next(self.output.parent.glob("scored_*.jsonl"))
         rows = [json.loads(line) for line in path.read_text().splitlines()]
         self.assertEqual(len(rows), 2)
@@ -164,8 +168,8 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(rows[0]["trace_run_id"], "trace-id")
         self.assertEqual(rows[0]["expected_answer"], "red")
         self.assertTrue(all(call["eval_mode"] for call in calls))
-        self.assertEqual(calls[0]["conversation_id"], calls[1]["conversation_id"])
-        self.assertEqual(calls[0]["authenticated_client_id"], calls[1]["authenticated_client_id"])
+        self.assertIs(calls[0]["conversation"], calls[1]["conversation"])
+        self.assertIs(calls[0]["repository"], calls[1]["repository"])
         summary = json.loads(path.with_suffix(".summary.json").read_text())
         self.assertEqual(summary["eval_id"], rows[0]["eval_id"])
         self.assertEqual(summary["metrics"]["rouge_l_f1"], {"mean": 1, "count": 2})

@@ -1,5 +1,3 @@
-from dataclasses import asdict
-from datetime import datetime
 import json
 import logging
 from pathlib import Path
@@ -8,11 +6,8 @@ from uuid import uuid4
 from ..resources.system.system import call_model
 from ..resources.tools.execute import select_tools, execute_tool
 from ..resources.tracer import Tracer
-from ..resources.conversation.conversation import ConversationRepository
-from ..resources.memory import load_jsonl_memory_context
-from ..resources.prompts import (
-    SYSTEM_PROMPT
-)
+from ..resources.conversation.conversation import Conversation, ConversationRepository
+from ..resources.prompts import SYSTEM_PROMPT
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -20,48 +15,26 @@ MEMORY_PATH = PROJECT_ROOT / "src" / "data" / "memory_eval.jsonl"
 TRACE_PATH = PROJECT_ROOT / "traces" / "runs_eval.jsonl"
 
 
-def _timestamp() -> str:
-    return datetime.now().astimezone().isoformat(sep=" ", timespec="seconds")
-
-def run_agent(prompt: str, model: str, agent_tools: list[str], authenticated_client_id: str, conversation_id: str = None, max_steps: int = 25, eval_mode: bool = False) -> tuple[str | None, str | int, str]:
-    """Execute a domain-neutral workflow and save its events and two reports."""
+def run_agent(
+    prompt: str,
+    model: str,
+    agent_tools: list[str],
+    conversation: Conversation,
+    repository: ConversationRepository,
+    max_steps: int = 25,
+    eval_mode: bool = False,
+) -> tuple[str | None, Conversation, str]:
+    """Run one turn using the loaded conversation and save only its new events."""
+    if conversation._pending_events or conversation.context["current_conversation"]:
+        raise RuntimeError("Save the pending conversation events before starting another turn.")
     tools = select_tools(agent_tools)
-    memory_path = MEMORY_PATH
-    if eval_mode:
-        memory_path = PROJECT_ROOT / "evals" / "data" / "memory_eval.jsonl"
-    conversation = ConversationRepository(memory_path)
-    if conversation_id is None:
-        conversation_id = conversation.create(client_id=authenticated_client_id)
-
+    turn_id = uuid4().hex
     trace = Tracer(
-        client_id=authenticated_client_id,
-        conversation_id=conversation_id,
+        client_id=conversation.client_id,
+        conversation_id=conversation.conversation_id,
         model=model,
     )
-
-    context = []
-
-    if not eval_mode:
-        system_message = {"role": "system", "content": SYSTEM_PROMPT}
-        context.append(system_message)
-        conversation.append(
-            client_id=authenticated_client_id,
-            conversation_id=conversation_id,
-            type="system_message",
-            payload=system_message,
-        )
-
-    user_message = {"role": "user", "content": prompt}
-    context.extend(load_jsonl_memory_context(
-        memory_path, authenticated_client_id, conversation_id
-    ))
-    context.append(user_message)
-    conversation.append(
-        client_id=authenticated_client_id,
-        conversation_id=conversation_id,
-        type="user_message",
-        payload=user_message,
-    )
+    base_system_prompt = "" if eval_mode else SYSTEM_PROMPT
     completion = {
         "termination": "interrupted",
         "model_steps": 0,
@@ -70,19 +43,21 @@ def run_agent(prompt: str, model: str, agent_tools: list[str], authenticated_cli
     }
 
     try:
-        for step in range(max_steps):
+        conversation.add_event(
+            "user_message", {"role": "user", "content": prompt}, turn_id,
+        )
+        for step in range(1, max_steps + 1):
             completion["model_steps"] = step
-            response, raw = call_model(context, tools, model, trace=trace)
+            response, raw = call_model(
+                conversation.build_messages(base_system_prompt), tools, model, trace=trace,
+            )
             response_message = response.choices[0].message
 
             if response_message.content is not None:
-                response_payload = {"role": "assistant", "content": response_message.content}
-                context.append(response_payload)
-                conversation.append(
-                    client_id=authenticated_client_id,
-                    conversation_id=conversation_id,
-                    type="model_response",
-                    payload=response_payload,
+                conversation.add_event(
+                    "model_response",
+                    {"role": "assistant", "content": response_message.content},
+                    turn_id, step,
                 )
 
             if not response_message.tool_calls:
@@ -90,7 +65,7 @@ def run_agent(prompt: str, model: str, agent_tools: list[str], authenticated_cli
                     termination="answer_returned",
                     final_answer=response_message.content,
                 )
-                return response_message.content, conversation_id, trace.run_id
+                return response_message.content, conversation, trace.run_id
 
             for call in response_message.tool_calls:
                 tool_call = {
@@ -104,34 +79,29 @@ def run_agent(prompt: str, model: str, agent_tools: list[str], authenticated_cli
                     "name": call.function.name,
                     "arguments": call.function.arguments,
                 })
-                conversation.append(
-                    client_id=authenticated_client_id,
-                    conversation_id=conversation_id,
-                    type="tool_call",
-                    payload=tool_call,
-                )
-                context.append(tool_call)
-                result = execute_tool(call.function.name, call.function.arguments)
-                tool_output = {
-                    "type": "function_call_output",
-                    "call_id": call.id,
-                    "output": result,
-                }
-                trace.append("tool_result", {
-                    "call_id": call.id,
-                    "output": result,
-                })
-                conversation.append(
-                    client_id=authenticated_client_id,
-                    conversation_id=conversation_id,
-                    type="tool_result",
-                    payload=tool_output,
-                )
-                context.append(tool_output)
+                conversation.add_event("tool_call", tool_call, turn_id, step)
+                result = json.dumps({"error": "Tool execution interrupted"})
+                try:
+                    result = execute_tool(call.function.name, call.function.arguments)
+                except Exception as error:
+                    result = json.dumps({
+                        "error": type(error).__name__, "message": str(error),
+                    })
+                    raise
+                finally:
+                    tool_output = {
+                        "type": "function_call_output",
+                        "call_id": call.id,
+                        "output": result,
+                    }
+                    trace.append("tool_result", {
+                        "call_id": call.id, "output": result,
+                    })
+                    conversation.add_event("tool_result", tool_output, turn_id, step)
 
         answer = "Error: Max steps limit reached."
         completion.update(termination="step_limit", final_answer=answer)
-        return answer, conversation_id, trace.run_id
+        return answer, conversation, trace.run_id
     except Exception as error:
         completion.update(
             termination="exception",
@@ -140,24 +110,16 @@ def run_agent(prompt: str, model: str, agent_tools: list[str], authenticated_cli
         raise
     finally:
         try:
-            conversation.append(
-                client_id=authenticated_client_id,
-                conversation_id=conversation_id,
-                type="run_result",
-                payload={
-                    key: value
-                    for key, value in completion.items()
-                    if key != "final_answer"
-                },
+            conversation.add_event(
+                "run_result",
+                {key: value for key, value in completion.items() if key != "final_answer"},
+                turn_id,
+                completion["model_steps"] or None,
             )
-            conversation.dump()
+            conversation.finish_turn(repository)
         finally:
-            # Includes termination, final answer, step count, and any error.
             trace.append("run_result", completion)
-
             try:
                 trace.dump(TRACE_PATH)
             except Exception:
-                # A trace-writing failure should not replace the agent's error
-                # or prevent its successful answer from being returned.
                 logging.exception("Could not save execution trace")
