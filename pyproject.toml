@@ -13,6 +13,7 @@ dependencies = [
     "pypdf>=6.10.0,<7",
     "python-dotenv>=1.2.4",
     "requests>=2.34.2",
+    "tqdm>=4.70.1",
 ]
 
 [project.scripts]

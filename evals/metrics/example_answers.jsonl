@@ -1,0 +1,2 @@
+{"eval_id":"example","turn_id":1,"response":"In the blue tin on Shelf B.","expected_answer":"In the blue tin on Shelf B."}
+{"eval_id":"example","turn_id":2,"response":"Seed swap, repair table.","expected_answer":"Seed swap, repair table, story corner."}

@@ -1,0 +1,9 @@
+runner_module = "evals.metrics.run"
+
+[defaults]
+metrics = ["token_overlap", "rouge_l"]
+
+# Replace input with a saved eval result containing response and expected_answer.
+[cases.saved_answers]
+input = "example_answers.jsonl"
+output = "scored_answers.jsonl"

@@ -16,17 +16,20 @@ from ..resources.prompts import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MEMORY_PATH = PROJECT_ROOT / "src" / "data" / "memory.jsonl"
-TRACE_PATH = PROJECT_ROOT / "traces" / "runs.jsonl"
+MEMORY_PATH = PROJECT_ROOT / "src" / "data" / "memory_eval.jsonl"
+TRACE_PATH = PROJECT_ROOT / "traces" / "runs_eval.jsonl"
 
 
 def _timestamp() -> str:
     return datetime.now().astimezone().isoformat(sep=" ", timespec="seconds")
 
-def run_agent(prompt: str, model: str, agent_tools: list[str], authenticated_client_id: str, conversation_id: str = None, max_steps: int = 25) -> tuple[str | None, str | int]:
+def run_agent(prompt: str, model: str, agent_tools: list[str], authenticated_client_id: str, conversation_id: str = None, max_steps: int = 25, eval_mode: bool = False) -> tuple[str | None, str | int, str]:
     """Execute a domain-neutral workflow and save its events and two reports."""
     tools = select_tools(agent_tools)
-    conversation = ConversationRepository(MEMORY_PATH)
+    memory_path = MEMORY_PATH
+    if eval_mode:
+        memory_path = PROJECT_ROOT / "evals" / "data" / "memory_eval.jsonl"
+    conversation = ConversationRepository(memory_path)
     if conversation_id is None:
         conversation_id = conversation.create(client_id=authenticated_client_id)
 
@@ -36,19 +39,23 @@ def run_agent(prompt: str, model: str, agent_tools: list[str], authenticated_cli
         model=model,
     )
 
-    system_message = {"role": "system", "content": SYSTEM_PROMPT}
+    context = []
+
+    if not eval_mode:
+        system_message = {"role": "system", "content": SYSTEM_PROMPT}
+        context.append(system_message)
+        conversation.append(
+            client_id=authenticated_client_id,
+            conversation_id=conversation_id,
+            type="system_message",
+            payload=system_message,
+        )
+
     user_message = {"role": "user", "content": prompt}
-    context = [system_message]
     context.extend(load_jsonl_memory_context(
-        MEMORY_PATH, authenticated_client_id, conversation_id
+        memory_path, authenticated_client_id, conversation_id
     ))
     context.append(user_message)
-    conversation.append(
-        client_id=authenticated_client_id,
-        conversation_id=conversation_id,
-        type="system_message",
-        payload=system_message,
-    )
     conversation.append(
         client_id=authenticated_client_id,
         conversation_id=conversation_id,
@@ -83,7 +90,7 @@ def run_agent(prompt: str, model: str, agent_tools: list[str], authenticated_cli
                     termination="answer_returned",
                     final_answer=response_message.content,
                 )
-                return response_message.content, conversation_id
+                return response_message.content, conversation_id, trace.run_id
 
             for call in response_message.tool_calls:
                 tool_call = {
@@ -124,7 +131,7 @@ def run_agent(prompt: str, model: str, agent_tools: list[str], authenticated_cli
 
         answer = "Error: Max steps limit reached."
         completion.update(termination="step_limit", final_answer=answer)
-        return answer, conversation_id
+        return answer, conversation_id, trace.run_id
     except Exception as error:
         completion.update(
             termination="exception",

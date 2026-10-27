@@ -13,7 +13,7 @@ while (prompt := input("You: ").strip()).lower() != "exit":
     if not prompt:
         continue
 
-    response, conversation_id = run_agent(
+    response, conversation_id, _ = run_agent(
         prompt=prompt,
         model=MODEL,
         agent_tools=tools,

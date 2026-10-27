@@ -1,0 +1,17 @@
+runner_module = "evals.memory_design.eval_memory_script"
+
+[defaults]
+model= "gpt-6-luna"
+grader_model = "gpt-5.4-nano-2026-03-17"
+limit = 100
+metrics = ["token_overlap", "rouge_l"]
+
+[cases.tools_disabled]
+input = "tools_disabled.jsonl"
+output = "tools_disabled_result.jsonl"
+tools = []
+
+[cases.tools_enabled]
+input = "tools_enabled.jsonl"
+output = "tools_enabled_result.jsonl"
+tools = ["inspect_path", "read_file"]
