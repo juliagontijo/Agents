@@ -28,3 +28,12 @@ htmlcov/
 
 /src/data/
 traces/
+
+# Generated eval memory and results
+/evals/data/
+/evals/memory_design/*_result*.jsonl
+/evals/memory_design/*_result*.summary.json
+/evals/metrics/*_result*.jsonl
+/evals/metrics/*_result*.summary.json
+/evals/metrics/scored_answers*.jsonl
+/evals/metrics/scored_answers*.summary.json

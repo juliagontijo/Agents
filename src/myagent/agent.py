@@ -1,17 +1,22 @@
 import json
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from ..resources.system.system import call_model
 from ..resources.tools.execute import select_tools, execute_tool
 from ..resources.tracer import Tracer
-from ..resources.conversation.conversation import Conversation, ConversationRepository
+from ..resources.conversation.conversation import Conversation
+from ..resources.conversation.compaction import DEFAULT_COMPACTION_TOKEN_LIMIT, compact_conversation
 from ..resources.prompts import SYSTEM_PROMPT
+
+if TYPE_CHECKING:
+    from ..resources.conversation.repository import ConversationRepository
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MEMORY_PATH = PROJECT_ROOT / "src" / "data" / "memory_eval.jsonl"
+MEMORY_PATH = PROJECT_ROOT / "src" / "data" / "memory"
 TRACE_PATH = PROJECT_ROOT / "traces" / "runs_eval.jsonl"
 
 
@@ -20,11 +25,13 @@ def run_agent(
     model: str,
     agent_tools: list[str],
     conversation: Conversation,
-    repository: ConversationRepository,
+    repository: "ConversationRepository",
     max_steps: int = 25,
     eval_mode: bool = False,
+    compaction_token_limit: int = DEFAULT_COMPACTION_TOKEN_LIMIT,
+    summary_model: str | None = None,
 ) -> tuple[str | None, Conversation, str]:
-    """Run one turn using the loaded conversation and save only its new events."""
+
     if conversation._pending_events or conversation.context["current_conversation"]:
         raise RuntimeError("Save the pending conversation events before starting another turn.")
     tools = select_tools(agent_tools)
@@ -48,6 +55,12 @@ def run_agent(
         )
         for step in range(1, max_steps + 1):
             completion["model_steps"] = step
+            compact_conversation(
+                conversation, repository, summary_model or model,
+                token_limit=compaction_token_limit, system_prompt=base_system_prompt,
+                tools=tools, trace=trace,
+                summary=next(iter(conversation.context["memory"]["summaries"]), None),
+            )
             response, raw = call_model(
                 conversation.build_messages(base_system_prompt), tools, model, trace=trace,
             )

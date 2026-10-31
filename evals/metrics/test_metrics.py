@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from evals.metrics.scoring import RunScorer
 from evals.metrics.text import rouge_l, token_overlap
-from src.resources.conversation.conversation import ConversationRepository
+from src.resources.conversation.repository import ConversationRepository
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -156,11 +156,11 @@ class RunnerTests(unittest.TestCase):
         dataset.write_text(''.join(json.dumps({"id": i, "prompt": "Recall the colour", "expected_answer": "red"}) + "\n" for i in [1, 2]))
         arguments = ["memory_eval", "--input", str(dataset), "--output", str(self.output), "--model", "mock", "--grader-model", "mock"]
         modules = {"src.myagent.agent": agent_module, "resources.system.system": model_module, "tqdm": progress_module}
-        repository = ConversationRepository(self.root / "memory.jsonl")
-        with patch.dict(sys.modules, modules), patch.object(sys, "argv", arguments), patch("src.resources.conversation.conversation.ConversationRepository", return_value=repository) as repository_class, patch.object(repository, "open", wraps=repository.open) as open_conversation, contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+        repository = ConversationRepository(self.root / "memory")
+        with patch.dict(sys.modules, modules), patch.object(sys, "argv", arguments), patch("src.resources.conversation.repository.ConversationRepository", return_value=repository) as repository_class, patch.object(repository, "open", wraps=repository.open) as open_conversation, contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
             runpy.run_module("evals.memory_design.eval_memory_script", run_name="__main__")
         repository_class.assert_called_once()
-        open_conversation.assert_called_once()
+        open_conversation.assert_called_once_with(client_id=calls[0]["conversation"].client_id)
         path = next(self.output.parent.glob("scored_*.jsonl"))
         rows = [json.loads(line) for line in path.read_text().splitlines()]
         self.assertEqual(len(rows), 2)

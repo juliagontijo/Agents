@@ -3,6 +3,8 @@ runner_module = "evals.memory_design.eval_memory_script"
 [defaults]
 model= "gpt-6-luna"
 grader_model = "gpt-5.4-nano-2026-03-17"
+# Estimated input budget; set very high (e.g. 1_000_000_000) for a baseline without compaction.
+compaction_token_limit = 8_000
 limit = 100
 metrics = ["token_overlap", "rouge_l"]
 

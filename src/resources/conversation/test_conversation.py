@@ -10,7 +10,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from src.myagent.agent import run_agent
-from src.resources.conversation.conversation import Conversation, ConversationRepository
+from src.resources.conversation.conversation import Conversation, Summary
+from src.resources.conversation.repository import ConversationRepository
 
 
 def response(content=None, calls=None):
@@ -30,14 +31,12 @@ class ConversationTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.path = self.root / "memory.jsonl"
+        self.path = self.root / "memory"
         self.repository = ConversationRepository(self.path)
 
     def records(self):
-        return [json.loads(line) for line in self.path.read_text().splitlines() if line.strip()]
-
-    def write_records(self, records):
-        self.path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+        return [json.loads(line) for path in sorted(self.path.glob("*/structured/*.jsonl"))
+                for line in path.read_text().splitlines() if line.strip()]
 
     def test_context_defaults_are_independent(self):
         first = Conversation(client_id="one")
@@ -76,7 +75,10 @@ class ConversationTests(unittest.TestCase):
         previous = {"role": "assistant", "content": "Earlier answer"}
         current = {"role": "user", "content": "Next question"}
         conversation.context["memory"]["structured"].append(previous)
-        conversation.context["memory"]["summaries"].extend(["# Plans\nUse Shelf B.", "# Preferences\nShort answers."])
+        conversation.context["memory"]["summaries"].extend([
+            Summary("client", conversation.conversation_id, "# Plans\nUse Shelf B.", 1, 3),
+            Summary("client", conversation.conversation_id, "# Preferences\nShort answers.", 4, 6),
+        ])
         conversation.add_event("user_message", current, "turn")
         original = deepcopy(conversation.context)
         messages = conversation.build_messages("Base instructions")
@@ -101,14 +103,14 @@ class ConversationTests(unittest.TestCase):
         conversation.add_event("model_response", {"role": "assistant", "content": "First answer"}, "first-turn", 1)
         conversation.add_event("run_result", {"termination": "answer_returned"}, "first-turn", 1)
         conversation.finish_turn(self.repository)
-        saved = self.path.read_bytes()
+        saved = self.records()
         self.assertEqual(len(self.records()), 3)
         self.assertEqual(len(conversation.context["memory"]["structured"]), 2)
         self.assertIs(conversation.context["memory"]["structured"][0], first)
         self.assertEqual(conversation.context["current_conversation"], [])
         self.assertEqual(conversation._pending_events, [])
         conversation.finish_turn(self.repository)
-        self.assertEqual(self.path.read_bytes(), saved)
+        self.assertEqual(self.records(), saved)
         conversation.add_event("user_message", {"role": "user", "content": "Second question"}, "second-turn")
         conversation.finish_turn(self.repository)
         self.assertEqual(len(self.records()), 4)
@@ -119,7 +121,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(restored._pending_events, [])
 
     def test_save_failure_retains_pending_events_and_current_messages(self):
-        conversation = Conversation(client_id="client")
+        conversation = self.repository.open("client")
         message = {"role": "user", "content": "Keep me"}
         conversation.add_event("user_message", message, "turn")
         original_event = conversation._pending_events[0]
@@ -134,53 +136,16 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(len(self.records()), 1)
         self.assertEqual(conversation._pending_events, [])
 
-    def test_open_scopes_events_by_both_ids_and_uses_legacy_event_timestamp(self):
-        def event(client, conversation, content, **changes):
-            return {"client_id": client, "conversation_id": conversation,
-                    "type": "user_message", "recorded_at": 123,
-                    "payload": {"role": "user", "content": content}, **changes}
-
-        self.write_records([
-            event("other", "selected", "Other client"),
-            event("client", "other", "Other conversation"),
-            event("client", "selected", "Chosen"),
-            event("client", "selected", "System metadata", type="system_message"),
-            event("client", "selected", "Run metadata", type="run_result"),
-            event("client", "selected", "Answer", type="model_response",
-                  payload={"role": "assistant", "content": "Answer"}),
-        ])
-        conversation = self.repository.open("client", "selected")
-        self.assertEqual(conversation.created_at, 123)
-        self.assertEqual(conversation.context["memory"]["structured"], [
-            {"role": "user", "content": "Chosen"},
-            {"role": "assistant", "content": "Answer"},
-        ])
-
-    def test_legacy_pretty_lookup_remains_available_after_creating_another_conversation(self):
-        lookup = self.path.with_name("conversations_lookup.txt")
-        lookup.write_text(json.dumps({"client_id": "client", "conversation_id": "old", "created_at": 17, "metadata": {}}, indent=2))
-        old = self.repository.open("client", "old")
-        self.assertEqual(old.created_at, 17)
-        fresh = self.repository.open("client", "new-explicit-id")
-        self.assertEqual(fresh.conversation_id, "new-explicit-id")
-        self.assertEqual(fresh.context["memory"]["structured"], [])
-        self.assertEqual(self.repository.open("client", "old").created_at, 17)
-        self.assertEqual(self.repository.open("client", fresh.conversation_id).created_at, fresh.created_at)
-
-    def test_jsonl_lookup_metadata_is_scoped_and_summary_files_load_once(self):
-        lookup = self.path.with_name("conversations_lookup.txt")
-        lookup.write_text("".join(json.dumps(row) + "\n" for row in [
-            {"client_id": "other", "conversation_id": "selected", "created_at": 10},
-            {"client_id": "client", "conversation_id": "selected", "created_at": 20},
-        ]))
-        summary = self.root / "summary.md"
-        summary.write_text("# Past plans\nThe keys are on Shelf B.")
-        conversation = self.repository.open("client", "selected", summary_paths=[summary])
-        self.assertEqual(conversation.created_at, 20)
-        self.assertEqual(conversation.context["memory"]["summaries"], [summary.read_text()])
-        summary.write_text("Changed after initialization")
-        self.assertIn("Shelf B", conversation.build_messages()[0]["content"])
-        self.assertNotIn("Changed after initialization", conversation.build_messages()[0]["content"])
+    def test_open_scopes_events_by_both_ids(self):
+        selected = self.repository.open("client")
+        other = self.repository.open("client")
+        for conversation, content in ((selected, "Chosen"), (other, "Other conversation")):
+            conversation.add_event("user_message", {"role": "user", "content": content}, "turn")
+            conversation.finish_turn(self.repository)
+        restored = self.repository.open("client", selected.conversation_id)
+        self.assertEqual(restored.context["memory"]["structured"], [{"role": "user", "content": "Chosen"}])
+        with self.assertRaises(ValueError):
+            self.repository.open("other", selected.conversation_id)
 
 
 class AgentConversationTests(unittest.TestCase):
@@ -188,7 +153,7 @@ class AgentConversationTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.path = self.root / "memory.jsonl"
+        self.path = self.root / "memory"
         self.trace_path = self.root / "traces.jsonl"
         self.repository = ConversationRepository(self.path)
         self.conversation = self.repository.open("client")
@@ -200,7 +165,8 @@ class AgentConversationTests(unittest.TestCase):
                          **changes)
 
     def records(self):
-        return [json.loads(line) for line in self.path.read_text().splitlines() if line.strip()]
+        return [json.loads(line) for path in sorted(self.path.glob("*/structured/*.jsonl"))
+                for line in path.read_text().splitlines() if line.strip()]
 
     def test_tool_loop_and_next_turn_use_same_conversation_without_reading_memory(self):
         captured = []
@@ -226,7 +192,7 @@ class AgentConversationTests(unittest.TestCase):
             original_open = Path.open
 
             def forbid_memory_reads(path, mode="r", *args, **kwargs):
-                if Path(path) == self.path and "r" in mode:
+                if self.path in Path(path).parents and Path(path).suffix == ".jsonl" and "r" in mode:
                     raise AssertionError("The next turn must use in-memory history")
                 return original_open(path, mode, *args, **kwargs)
 
@@ -304,12 +270,14 @@ class AgentConversationTests(unittest.TestCase):
 
 class CliConversationTests(unittest.TestCase):
     def test_cli_initializes_once_and_reuses_new_or_selected_conversation(self):
-        for selected_id in ("", "existing"):
+        for use_existing in (False, True):
+            selected_id = ""
             with self.subTest(selected_id=selected_id), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                repository = ConversationRepository(root / "memory.jsonl")
-                if selected_id:
-                    existing = repository.open("juju", selected_id)
+                repository = ConversationRepository(root / "memory")
+                if use_existing:
+                    existing = repository.open("luca")
+                    selected_id = existing.conversation_id
                     existing.add_event("user_message", {"role": "user", "content": "Old question"}, "old-turn")
                     existing.add_event("model_response", {"role": "assistant", "content": "Old answer"}, "old-turn", 1)
                     existing.finish_turn(repository)
@@ -319,9 +287,9 @@ class CliConversationTests(unittest.TestCase):
                     seen.append(kwargs["conversation"])
                     return run_agent(**kwargs)
 
-                with patch("src.resources.conversation.conversation.ConversationRepository", return_value=repository), patch.object(repository, "open", wraps=repository.open) as open_conversation, patch("src.myagent.agent.run_agent", side_effect=record_call), patch("src.myagent.agent.call_model", return_value=response("Answer")), patch("src.myagent.agent.TRACE_PATH", root / "traces.jsonl"), patch("builtins.input", side_effect=[selected_id, "First", "Second", "exit"]), contextlib.redirect_stdout(io.StringIO()):
+                with patch("src.resources.conversation.repository.ConversationRepository", return_value=repository), patch.object(repository, "open", wraps=repository.open) as open_conversation, patch("src.myagent.agent.run_agent", side_effect=record_call), patch("src.myagent.agent.call_model", return_value=response("Answer")), patch("src.myagent.agent.TRACE_PATH", root / "traces.jsonl"), patch("builtins.input", side_effect=[selected_id, "First", "Second", "exit"]), contextlib.redirect_stdout(io.StringIO()):
                     runpy.run_path(str(Path(__file__).resolve().parents[3] / "script.py"), run_name="__main__")
-                open_conversation.assert_called_once_with(client_id="juju", conversation_id=selected_id or None)
+                open_conversation.assert_called_once_with(client_id="luca", conversation_id=selected_id or None)
                 self.assertIs(seen[0], seen[1])
                 history = seen[0].context["memory"]["structured"]
                 self.assertEqual(len(history), 6 if selected_id else 4)
