@@ -41,36 +41,57 @@ full history without compaction.
 Memory currently stays within one conversation; shared memory across conversations
 is not implemented.
 
-## Evals
+## Run evals
+
+After `uv sync`, run both memory suites from the project root:
 
 ```bash
-uv run python -m evals.run --config evals/evals.toml
+.venv/bin/python -m evals.run --config evals/evals.toml
 ```
 
-`evals/evals.toml` selects the runs and can override their settings, including
-`limit`. `evals/memory_design/memory_eval_config.toml` defines the models,
-compaction limit, datasets, tools, and metrics for each memory case.
+This runs 100 sequential prompts without tools, then 100 with local file tools
+and fixed fixtures. Eval mode omits the default application system prompt.
+Results include an LLM grade, token precision/recall/F1, and ROUGE-L F1.
 
-The two memory suites each contain 100 sequential prompts: one without tools and
-one using local file tools with fixed fixtures. Eval mode omits the default
-application system prompt. Results include an LLM grade, token precision/recall/F1,
-and ROUGE-L F1. Each run writes uniquely named answer JSONL and summary JSON files.
+Choose suites and turn limits in `evals/evals.toml`. Keep only the `[[runs]]`
+entries you want to execute. For example, to run 30 turns without tools:
+
+```toml
+[[runs]]
+name = "memory_without_tools"
+config = "memory_design/memory_eval_config.toml"
+case = "tools_disabled"
+limit = 30
+compaction_token_limit = 8_000
+```
+
+Use `case = "tools_enabled"` for the local-tool suite and `limit = 100` for a full
+run. Models, tools, metrics, and default compaction settings are defined in
+`evals/memory_design/memory_eval_config.toml`; values in `evals/evals.toml`
+override those defaults. Set a very high `compaction_token_limit`, such as
+`1_000_000_000`, to compare against full history without compaction.
+
+Preview the selected commands without making model calls:
+
+```bash
+.venv/bin/python -m evals.run --config evals/evals.toml --dry-run
+```
+
+Results are saved in `evals/memory_design/` as
+`tools_disabled_result_<eval_id>.jsonl` or `tools_enabled_result_<eval_id>.jsonl`,
+with a matching `.summary.json` file. Each run gets a unique ID.
 The summary's `summaries_created` currently counts active summaries; count
 `memory_compaction` trace events for total compaction calls.
 
-Preview commands without running models:
+To calculate text metrics on saved answers without model calls:
 
 ```bash
-uv run python -m evals.run --config evals/evals.toml --dry-run
+.venv/bin/python -m evals.metrics.run --input path/to/answers.jsonl --output path/to/scores.jsonl
 ```
 
-Score existing answers without model calls:
-
-```bash
-uv run python -m evals.metrics.run --input path/to/answers.jsonl --output path/to/scores.jsonl
-```
-
-Each input row must contain `response` and `expected_answer`.
+Replace the paths with your saved result file and desired output path. Each input
+row must contain `response` and `expected_answer`; prompt-only datasets cannot be
+scored by this standalone runner. It writes per-answer metrics and a run summary.
 
 ## Offline tests
 
