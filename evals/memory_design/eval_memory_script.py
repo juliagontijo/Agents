@@ -65,8 +65,8 @@ parser.add_argument("--model", type=str)
 parser.add_argument("--grader-model", type=str)
 parser.add_argument("--summary-model", type=str, help="Defaults to the agent model")
 parser.add_argument("--compaction-token-limit", type=int, default=DEFAULT_COMPACTION_TOKEN_LIMIT,
-                    help="Estimated input tokens that trigger summarization; use a high value to avoid it")
-parser.add_argument("--limit", type=int, default=100)
+                    help="Last response's total tokens that trigger summarization; use a high value to avoid it")
+parser.add_argument("--limit", type=int, default=150)
 parser.add_argument("--input", type=str)
 parser.add_argument("--output", type=str)
 parser.add_argument("--tools", nargs="*", default=[])
@@ -167,7 +167,10 @@ summary = {
     "grader_model": args.grader_model,
     "summary_model": args.summary_model or args.model,
     "compaction_token_limit": args.compaction_token_limit,
-    "summaries_created": len(conversation.context["memory"]["summaries"]),
+    "summaries_created": sum(
+        event.type == "compaction"
+        for event in repository.load_events(conversation.client_id, conversation.conversation_id)
+    ),
     "tools": args.tools,
     "limit": args.limit,
     **scorer.summary(),

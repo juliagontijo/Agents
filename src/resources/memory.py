@@ -41,8 +41,17 @@ def load_jsonl_memory_records(path: Path, client_id: str, conversation_id: str) 
 
 
 def to_api_messages(records: list[dict]) -> list[dict]:
-    """Keep message/tool payloads; storage metadata and system prompts stay out."""
-    return [record["payload"] for record in records if record.get("type") in MESSAGE_TYPES]
+    """Build input from the latest compaction, later messages, and current system prompt."""
+    for index in range(len(records) - 1, -1, -1):
+        if records[index].get("type") == "compaction":
+            records = records[index:]
+            break
+    system_prompt = next(
+        (record["payload"] for record in reversed(records) if record.get("type") == "system_prompt"),
+        None,
+    )
+    messages = [record["payload"] for record in records if record.get("type") in MESSAGE_TYPES | {"compaction"}]
+    return ([system_prompt] if system_prompt is not None else []) + messages
 
 
 def load_jsonl_memory_context(path: Path, client_id: str, conversation_id: str) -> list[dict]:

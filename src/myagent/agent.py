@@ -2,12 +2,11 @@ import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 from ..resources.system.system import call_model
 from ..resources.tools.execute import select_tools, execute_tool
 from ..resources.tracer import Tracer
-from ..resources.conversation.conversation import Conversation
+from ..resources.conversation.conversation import Conversation, build_messages, add_event, finish_turn, trim_to_latest_compaction
 from ..resources.conversation.compaction import DEFAULT_COMPACTION_TOKEN_LIMIT, compact_conversation
 from ..resources.prompts import SYSTEM_PROMPT
 
@@ -32,16 +31,15 @@ def run_agent(
     summary_model: str | None = None,
 ) -> tuple[str | None, Conversation, str]:
 
-    if conversation._pending_events or conversation.context["current_conversation"]:
-        raise RuntimeError("Save the pending conversation events before starting another turn.")
     tools = select_tools(agent_tools)
-    turn_id = uuid4().hex
     trace = Tracer(
         client_id=conversation.client_id,
         conversation_id=conversation.conversation_id,
         model=model,
     )
-    base_system_prompt = "" if eval_mode else SYSTEM_PROMPT
+
+    system_prompt = "" if eval_mode else SYSTEM_PROMPT
+    token_count = 0
     completion = {
         "termination": "interrupted",
         "model_steps": 0,
@@ -49,28 +47,30 @@ def run_agent(
         "error": None,
     }
 
+    add_event(
+        conversation,
+        "system_prompt", {"role": "system", "content": system_prompt},
+    )
+
+    add_event(
+        conversation,
+        "user_message", {"role": "user", "content": prompt},
+    )
+
     try:
-        conversation.add_event(
-            "user_message", {"role": "user", "content": prompt}, turn_id,
-        )
         for step in range(1, max_steps + 1):
             completion["model_steps"] = step
-            compact_conversation(
-                conversation, repository, summary_model or model,
-                token_limit=compaction_token_limit, system_prompt=base_system_prompt,
-                tools=tools, trace=trace,
-                summary=next(iter(conversation.context["memory"]["summaries"]), None),
-            )
             response, raw = call_model(
-                conversation.build_messages(base_system_prompt), tools, model, trace=trace,
+                build_messages(conversation), tools, model, trace=trace,
             )
+            token_count = raw["usage"]["total_tokens"]
             response_message = response.choices[0].message
 
             if response_message.content is not None:
-                conversation.add_event(
+                add_event(
+                    conversation,
                     "model_response",
                     {"role": "assistant", "content": response_message.content},
-                    turn_id, step,
                 )
 
             if not response_message.tool_calls:
@@ -92,7 +92,8 @@ def run_agent(
                     "name": call.function.name,
                     "arguments": call.function.arguments,
                 })
-                conversation.add_event("tool_call", tool_call, turn_id, step)
+                add_event(
+                    conversation,"tool_call", tool_call)
                 result = json.dumps({"error": "Tool execution interrupted"})
                 try:
                     result = execute_tool(call.function.name, call.function.arguments)
@@ -110,7 +111,8 @@ def run_agent(
                     trace.append("tool_result", {
                         "call_id": call.id, "output": result,
                     })
-                    conversation.add_event("tool_result", tool_output, turn_id, step)
+                    add_event(
+                        conversation,"tool_result", tool_output)
 
         answer = "Error: Max steps limit reached."
         completion.update(termination="step_limit", final_answer=answer)
@@ -123,13 +125,34 @@ def run_agent(
         raise
     finally:
         try:
-            conversation.add_event(
+            add_event(
+                conversation,
                 "run_result",
                 {key: value for key, value in completion.items() if key != "final_answer"},
-                turn_id,
-                completion["model_steps"] or None,
             )
-            conversation.finish_turn(repository)
+            finish_turn(conversation, repository)
+            try:
+                compacted_memory = compact_conversation(
+                    conversation, summary_model or model, token_count,
+                    token_limit=compaction_token_limit, trace=trace,
+                )
+            except Exception:
+                logging.exception("Could not compact conversation")
+                compacted_memory = None
+            if compacted_memory is not None:
+                add_event(
+                    conversation,
+                    "compaction",
+                    {"role": "assistant", "content": compacted_memory},
+                )
+                finish_turn(conversation, repository)
+                conversation.events = trim_to_latest_compaction(conversation.events)
+
+                trace.append("memory_compaction", {
+                    "summary_id": conversation.events[-1].item_id,
+                    "model": summary_model or model,
+                    "request_total_tokens": token_count,
+                })
         finally:
             trace.append("run_result", completion)
             try:

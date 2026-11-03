@@ -2,13 +2,13 @@
 name = "memory_without_tools"
 config = "memory_design/memory_eval_config.toml"
 case = "tools_disabled"
-limit = 100
+limit = 150
 
 [[runs]]
 name = "memory_with_tools"
 config = "memory_design/memory_eval_config.toml"
 case = "tools_enabled"
-limit = 100
+limit = 150
 
 # To score saved answers without model calls, select this run:
 # [[runs]]
